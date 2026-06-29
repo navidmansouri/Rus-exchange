@@ -53,6 +53,7 @@ class AdminStates(StatesGroup):
     set_bank        = State()
     set_min         = State()
     set_max         = State()
+    set_support     = State()
     send_msg_order  = State()
     send_msg_text   = State()
     send_msg_photo  = State()
@@ -85,6 +86,9 @@ def order_action_keyboard(order_id):
         [
             InlineKeyboardButton(text="✅ تأیید سفارش", callback_data=f"approve_{order_id}"),
             InlineKeyboardButton(text="❌ رد سفارش",   callback_data=f"reject_{order_id}"),
+        ],
+        [
+            InlineKeyboardButton(text="✔️ تکمیل شد (واریز انجام شد)", callback_data=f"complete_{order_id}"),
         ],
         [
             InlineKeyboardButton(text="📨 پیام به مشتری", callback_data=f"msg_{order_id}"),
@@ -153,31 +157,35 @@ async def cmd_start(msg: Message, state: FSMContext):
     user = get_user(msg.from_user.id)
 
     if user:
+        # کاربر قبلاً ثبت‌نام کرده - مستقیم به منو
         name = user['first_name']
         ref = user['referral_code']
+        me = await bot.get_me()
         await msg.answer(
             f"👋 سلام {name} عزیز!\n\n"
             f"🇷🇺➡️🇮🇷 به صرافی روبل به ریال خوش اومدی.\n\n"
             f"🎟 کد رفرال شما: `{ref}`\n"
-            f"لینک دعوت: `https://t.me/{(await bot.get_me()).username}?start={ref}`\n\n"
+            f"لینک دعوت: `https://t.me/{me.username}?start={ref}`\n\n"
             "از منو زیر یه گزینه انتخاب کن:",
             parse_mode="Markdown",
             reply_markup=main_menu()
         )
         if msg.from_user.id == ADMIN_ID:
             await msg.answer("🔑 برای پنل ادمین: /admin")
-    else:
-        await state.update_data(ref_code=ref_code)
-        await msg.answer(
-            "👋 سلام!\n\n"
-            "🇷🇺➡️🇮🇷 به صرافی روبل به ریال خوش اومدی.\n\n"
-            "برای شروع باید ثبت‌نام کنی.\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "👤 *نام* خودت رو وارد کن:",
-            parse_mode="Markdown",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        await state.set_state(RegisterStates.first_name)
+        return  # ← مهم: اینجا متوقف میشه، ثبت‌نام شروع نمیشه
+
+    # کاربر جدید - شروع ثبت‌نام
+    await state.update_data(ref_code=ref_code)
+    await msg.answer(
+        "👋 سلام!\n\n"
+        "🇷🇺➡️🇮🇷 به صرافی روبل به ریال خوش اومدی.\n\n"
+        "برای شروع باید ثبت‌نام کنی.\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "👤 *نام* خودت رو وارد کن:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await state.set_state(RegisterStates.first_name)
 
 # ─── ثبت‌نام ──────────────────────────────────────────────────────────────────
 
@@ -442,11 +450,13 @@ async def bank_get_owner(msg: Message, state: FSMContext):
 
 @dp.message(F.text == "💱 تابلو قیمت")
 async def price_board(msg: Message):
+    from datetime import datetime
     rate_cash = get_setting('ruble_rate_cash')
     rate_card = get_setting('ruble_rate_card')
     min_o = get_setting('min_order')
     max_o = get_setting('max_order')
     bank_label = get_setting('bank_label') or 'ایران'
+    now = datetime.now().strftime("%Y/%m/%d - %H:%M")
 
     if (not rate_cash or rate_cash == '0') and (not rate_card or rate_card == '0'):
         await msg.answer("⚠️ قیمت هنوز توسط ادمین تنظیم نشده.")
@@ -455,6 +465,7 @@ async def price_board(msg: Message):
     text = (
         "━━━━━━━━━━━━━━━━━━\n"
         "📊 *تابلو قیمت*\n"
+        f"🕐 آخرین بروزرسانی: `{now}`\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
         f"💵 *روبل نقدی:*\n"
         f"   هر روبل = `{format_number(float(rate_cash))}` ریال\n\n"
@@ -569,6 +580,7 @@ async def get_amount(msg: Message, state: FSMContext):
 
 @dp.callback_query(OrderStates.select_account, F.data.startswith("select_"))
 async def select_account(cb: CallbackQuery, state: FSMContext):
+    from datetime import datetime
     acc_id = int(cb.data.split("_")[1])
     acc = get_bank_account(acc_id)
     if not acc or acc['user_id'] != cb.from_user.id:
@@ -599,6 +611,7 @@ async def select_account(cb: CallbackQuery, state: FSMContext):
     text = (
         f"🧾 *خلاصه سفارش #{order_id}*\n"
         "━━━━━━━━━━━━━━━━━━\n"
+        f"🗓 تاریخ: `{datetime.now().strftime('%Y/%m/%d - %H:%M')}`\n"
         f"🇷🇺 نوع: {ruble_type_fa(ruble_type)}\n"
         f"🇷🇺 مقدار روبل: `{format_number(ruble_amount)}`\n"
         f"💵 نرخ: `{format_number(rate)}` ریال/روبل\n"
@@ -700,10 +713,14 @@ async def my_orders(msg: Message):
 
 @dp.message(F.text == "📞 پشتیبانی")
 async def support(msg: Message):
+    support_username = get_setting('support_username') or ''
+    if support_username:
+        contact = f"@{support_username}"
+    else:
+        contact = f"آیدی عددی: `{ADMIN_ID}`"
     await msg.answer(
         "📞 *پشتیبانی*\n\n"
-        "برای ارتباط با پشتیبانی پیام بده:\n"
-        "@YourUsername\n\n"
+        f"برای ارتباط با پشتیبانی:\n{contact}\n\n"
         "⏰ ساعت پاسخگویی: ۹ صبح تا ۱۰ شب",
         parse_mode="Markdown"
     )
@@ -940,7 +957,35 @@ async def reject_order(cb: CallbackQuery):
     except:
         pass
 
-# ─── پیام به مشتری ────────────────────────────────────────────────────────────
+@dp.callback_query(F.data.startswith("complete_"))
+async def complete_order(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    order_id = int(cb.data.split("_")[1])
+    order = get_order(order_id)
+    if not order:
+        await cb.answer("سفارش پیدا نشد.")
+        return
+    update_order_status(order_id, 'completed')
+    await cb.answer("✔️ سفارش تکمیل شد")
+    try:
+        await cb.message.edit_caption(
+            caption=f"✔️ *سفارش #{order_id} تکمیل شد*\n{cb.message.caption or ''}",
+            parse_mode="Markdown"
+        )
+    except:
+        pass
+    try:
+        await bot.send_message(
+            order['user_id'],
+            f"✔️ *سفارش #{order_id} تکمیل شد!*\n\n"
+            f"واریز روبل به حساب شما انجام شد.\n"
+            f"ممنون از اعتمادت 🙏",
+            parse_mode="Markdown"
+        )
+    except:
+        pass
+
+
 
 @dp.message(F.text == "📨 پیام به مشتری")
 async def send_msg_start(msg: Message, state: FSMContext):
@@ -1054,9 +1099,11 @@ async def admin_settings(msg: Message):
         "━━━━━━━━━━━━━━━━━━"
     )
     toggle = "غیرفعال کن" if active == 'true' else "فعال کن"
+    support_u = get_setting('support_username') or 'تنظیم نشده'
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🤖 ربات رو {toggle}", callback_data="toggle_bot")],
         [InlineKeyboardButton(text="📉 تغییر حداقل/حداکثر", callback_data="set_limits")],
+        [InlineKeyboardButton(text=f"📞 یوزرنیم پشتیبانی: @{support_u}", callback_data="set_support")],
     ])
     await msg.answer(text, parse_mode="Markdown", reply_markup=kb)
 
@@ -1070,6 +1117,30 @@ async def toggle_bot(cb: CallbackQuery):
     await cb.answer(f"ربات {status} شد")
     await cb.message.edit_reply_markup(reply_markup=None)
     await bot.send_message(ADMIN_ID, f"ربات {status} شد.", reply_markup=admin_menu())
+
+@dp.callback_query(F.data == "set_support")
+async def set_support_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID: return
+    await cb.answer()
+    await bot.send_message(
+        ADMIN_ID,
+        "📞 یوزرنیم پشتیبانی رو وارد کن (بدون @):\n"
+        "مثلاً: `myusername`",
+        parse_mode="Markdown",
+        reply_markup=cancel_keyboard()
+    )
+    await state.set_state(AdminStates.set_support)
+
+@dp.message(AdminStates.set_support)
+async def save_support(msg: Message, state: FSMContext):
+    if msg.text == "❌ انصراف":
+        await state.clear()
+        await msg.answer("لغو شد.", reply_markup=admin_menu())
+        return
+    username = msg.text.strip().lstrip('@')
+    set_setting('support_username', username)
+    await msg.answer(f"✅ پشتیبانی تنظیم شد: @{username}", reply_markup=admin_menu())
+    await state.clear()
 
 @dp.callback_query(F.data == "set_limits")
 async def set_limits(cb: CallbackQuery, state: FSMContext):
